@@ -240,7 +240,7 @@ class CallbackModule(CallbackBase):
     def log(self, result, category, log_level):
         data = result._result
         if isinstance(data, MutableMapping) or isinstance(data, dict):
-            if self.resp data.get('_ansible_no_log', False):
+            if self.respect_no_log and 'censored' in data:
                 return
 
             if '_ansible_verbose_override' in data:
