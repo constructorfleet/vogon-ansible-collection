@@ -1,2 +1,2 @@
-# vogon-ansible-modules
+# Vogon Ansible Collection
 Ansible Plugins and Modules
