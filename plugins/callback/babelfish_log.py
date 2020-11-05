@@ -4,6 +4,7 @@
 # (c) 2017 Ansible Project
 # MIT License
 from __future__ import (absolute_import, division, print_function)
+
 __metaclass__ = type
 
 DOCUMENTATION = '''
@@ -25,6 +26,14 @@ DOCUMENTATION = '''
         ini:
           - section: callback_babelfish_log
             key: log_folder
+      format_invocation:
+        default: no
+        description: Whether or not to format the invocation dictionary./
+        env:
+          - name: ANSIBLE_LOG_FORMAT_INVOCATION
+        ini:
+          - section: callback_babelfish_log
+            key: format_invocation
       max_bytes:
         default: 0
         description: Maximum log file size in bytes before rolling over.
@@ -101,6 +110,7 @@ class CallbackModule(CallbackBase):
     msg_format = DEFAULT_MSG_FORMAT
 
     log_folder = DEFAULT_FOLDER
+    format_invocation = False
     max_bytes = 0
     backup_count = 0
     loggers = {}
@@ -119,7 +129,6 @@ class CallbackModule(CallbackBase):
             var_options=var_options,
             direct=direct
         )
-
         self.log_folder = self.get_option('log_folder') \
             if 'log_folder' in self._plugin_options \
             else DEFAULT_FOLDER
@@ -129,6 +138,7 @@ class CallbackModule(CallbackBase):
         self.msg_format = self.get_option('msg_format') \
             if 'msg_format' in self._plugin_options \
             else DEFAULT_MSG_FORMAT
+
         self.max_bytes = int(self.get_option('max_bytes')
                              if 'max_bytes' in self._plugin_options
                              else 0)
@@ -136,11 +146,17 @@ class CallbackModule(CallbackBase):
                                 if 'backup_count' in self._plugin_options
                                 else 0)
 
+        self.format_invocation = (self.get_option('format_invocation')
+                                  if 'format_invocation' in self._plugin_options
+                                  else 'no').lower() == 'yes'
+
+
         if not os.path.exists(self.log_folder):
             makedirs_safe(self.log_folder)
 
     def _get_logger(self, host):
         logger = logging.getLogger('babelfish_log_%s' % host)
+        logger.setLevel(INFO)
         logger.addHandler(
             RotatingFileHandler(
                 os.path.join(self.log_folder, host),
@@ -193,32 +209,30 @@ class CallbackModule(CallbackBase):
 
     def log(self, result, category, log_level):
         data = result._result
-        if isinstance(data, MutableMapping):
+        if isinstance(data, MutableMapping) or isinstance(data, dict):
             if '_ansible_verbose_override' in data:
                 # avoid logging extraneous data
                 data = 'omitted'
             else:
                 data = data.copy()
                 invocation = data.pop('invocation', None)
-                data = self._format_data(data)
+                data = self._format_output(data)
                 if invocation is not None:
+                    invocation = self._format_output(invocation) if self.format_invocation else json.dumps(invocation)
                     data = json.dumps(invocation) + " => %s " % data
 
         now = time.strftime(self.time_format, time.localtime())
 
         msg = self.msg_format % dict(
-                now=now,
-                playbook=self.playbook,
-                task_name=result._task.name,
-                task_action=result._task.action,
-                category=category,
-                data=data,
-            )
-
-        logger = self.loggers.get(
-            result._host.get_name(),
-            self._get_logger(result._host.get_name)
+            now=now,
+            playbook=self.playbook,
+            task_name=result._task.name,
+            task_action=result._task.action,
+            category=category,
+            data=data,
         )
+        host_name = result._host.get_name()
+        logger = self.loggers[host_name] if host_name in self.loggers else self._get_logger(host_name)
 
         logger.log(log_level, msg)
 
