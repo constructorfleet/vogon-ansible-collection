@@ -80,7 +80,7 @@ DOCUMENTATION = '''
         env:
           - name: ANSIBLE_LOG_WHITELIST_KEYS
         ini:
-          - section: callback_babel_log
+          - section: callback_babelfish_log
             key: whitelist_dict_keys
 '''
 
@@ -107,9 +107,12 @@ FIELDS = [
     'end',
     'delta',
     'msg',
+    'item',
     'stdout',
     'stderr',
-    'results'
+    'results',
+    'item',
+    '_ansible_item_label'
 ]
 
 
@@ -189,18 +192,26 @@ class CallbackModule(CallbackBase):
         self.loggers[host] = logger
         return logger
 
-    def _format_output(self, output):
+    def _filter_dict_keys(self, output):
+        return {
+            k: v
+            for k, v
+            in output.items()
+            if (len(self.whitelist_keys) == 0 or k in self.whitelist_keys)
+        }
+
+    def _format_output(self, output, stringify=True):
         # If output is a dict
         if type(output) == dict:
-            filtered_output = output.copy()
-            if self.whitelist_keys:
-                filtered_output = {
-                    k: v
-                    for k, v
-                    in filtered_output.items()
-                    if k in self.whitelist_keys
-                }
-            return json.dumps(filtered_output, indent=2, sort_keys=True)
+            results = output.pop('results', None)
+            filtered_output = self._filter_dict_keys(output)
+            if results:
+                filtered_output['results'] = [
+                    self._format_output(item, False)
+                    for item
+                    in results
+                ]
+            return json.dumps(filtered_output, indent=2, sort_keys=True) if stringify else filtered_output
 
         # If output is a list of dicts
         if type(output) == list and type(output[0]) == dict:
@@ -208,13 +219,8 @@ class CallbackModule(CallbackBase):
             # nested results, usually because of with_items.
             real_output = list()
             for index, item in enumerate(output):
-                copy = item
-                if type(item) == dict:
-                    for field in FIELDS:
-                        if field in item.keys():
-                            copy[field] = self._format_output(item[field])
-                real_output.append(copy)
-            return json.dumps(output, indent=2, sort_keys=True)
+                real_output.append(self._format_output(item, False))
+            return json.dumps(real_output, indent=2, sort_keys=True) if stringify else real_output
 
         # If output is a list of strings
         if type(output) == list and type(output[0]) != dict:
