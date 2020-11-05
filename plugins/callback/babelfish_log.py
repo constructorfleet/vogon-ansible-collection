@@ -66,6 +66,22 @@ DOCUMENTATION = '''
         ini:
           - section: callback_babelfish_log
             key: msg_format
+      respect_no_log:
+        default: yes
+        description: Whether or not to respect the no_log module argument.
+        env:
+          - name: ANSIBLE_LOG_RESPECT_NO_LOG
+        ini:
+          - section: callback_babelfish_log
+            key: respect_no_log
+      whitelist_dict_keys:
+        default: ''
+        description: Comma separated list of dictionary keys to report back, all if empty.
+        env:
+          - name: ANSIBLE_LOG_WHITELIST_KEYS
+        ini:
+          - section: callback_babel_log
+            key: whitelist_dict_keys
 '''
 
 import os
@@ -111,8 +127,11 @@ class CallbackModule(CallbackBase):
 
     log_folder = DEFAULT_FOLDER
     format_invocation = False
+    respect_no_log = True
     max_bytes = 0
     backup_count = 0
+    whitelist_keys = []
+
     loggers = {}
     play_timestamp = ''
     playbook = None
@@ -150,6 +169,9 @@ class CallbackModule(CallbackBase):
                                   if 'format_invocation' in self._plugin_options
                                   else 'no').lower() == 'yes'
 
+        self.whitelist_keys = (self.get_option('whitelist_dict_keys')
+                               if 'whitelist_dict_keys' in self._plugin_options
+                               else '').split(',')
 
         if not os.path.exists(self.log_folder):
             makedirs_safe(self.log_folder)
@@ -170,7 +192,15 @@ class CallbackModule(CallbackBase):
     def _format_output(self, output):
         # If output is a dict
         if type(output) == dict:
-            return json.dumps(output, indent=2, sort_keys=True)
+            filtered_output = output.copy()
+            if self.whitelist_keys:
+                filtered_output = {
+                    k: v
+                    for k, v
+                    in filtered_output.items()
+                    if k in self.whitelist_keys
+                }
+            return json.dumps(filtered_output, indent=2, sort_keys=True)
 
         # If output is a list of dicts
         if type(output) == list and type(output[0]) == dict:
@@ -210,16 +240,22 @@ class CallbackModule(CallbackBase):
     def log(self, result, category, log_level):
         data = result._result
         if isinstance(data, MutableMapping) or isinstance(data, dict):
+            if self.resp data.get('_ansible_no_log', False):
+                return
+
             if '_ansible_verbose_override' in data:
                 # avoid logging extraneous data
                 data = 'omitted'
             else:
                 data = data.copy()
-                invocation = data.pop('invocation', None)
+                invocation = data.pop('invocation', {})
+                invocation = invocation.get('module_args', None)
                 data = self._format_output(data)
                 if invocation is not None:
-                    invocation = self._format_output(invocation) if self.format_invocation else json.dumps(invocation)
-                    data = json.dumps(invocation) + " => %s " % data
+                    invocation = self._format_output(invocation) \
+                        if self.format_invocation \
+                        else json.dumps(invocation)
+                    data = invocation + " => %s " % data
 
         now = time.strftime(self.time_format, time.localtime())
 
