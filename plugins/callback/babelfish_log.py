@@ -3,6 +3,8 @@
 # (C) 2012, Michael DeHaan, <michael.dehaan@gmail.com>
 # (c) 2017 Ansible Project
 # MIT License
+from __future__ import (absolute_import, division, print_function)
+__metaclass__ = type
 
 DOCUMENTATION = '''
     author: Teagan Glenn
@@ -39,6 +41,22 @@ DOCUMENTATION = '''
         ini:
           - section: callback_babelfish_log
             key: backup_count
+      time_format:
+        default: "%b %d %Y %H:%M:%S"
+        description: Time format string.
+        env:
+          - name: ANSIBLE_LOG_TIME_FORMAT
+        ini:
+          - section: callback_babelfish_log
+            key: time_format
+      msg_format:
+        default: "%(now)s - %(playbook)s - %(task_name)s - %(task_action)s - %(category)s - %(data)s\n\n"
+        description: Format string for log messages.
+        env:
+          - name: ANSIBLE_LOG_MSG_FORMAT
+        ini:
+          - section: callback_babelfish_log
+            key: msg_format
 '''
 
 import os
@@ -53,6 +71,9 @@ from ansible.module_utils.common._collections_compat import MutableMapping
 from ansible.plugins.callback import CallbackBase
 
 DEFAULT_FOLDER = '/var/log/ansible/hosts'
+DEFAULT_TIME_FORMAT = '%b %d %Y %H:%M:%S'
+DEFAULT_MSG_FORMAT = '%(now)s - %(playbook)s - %(task_name)s - %(task_action)s - %(category)s - %(data)s\n\n'
+
 # Fields to reformat output for
 FIELDS = [
     'cmd',
@@ -76,8 +97,8 @@ class CallbackModule(CallbackBase):
     CALLBACK_NAME = 'constructorfleet.vogon.babelfish_log'
     CALLBACK_NEEDS_WHITELIST = True
 
-    TIME_FORMAT = '%b %d %Y %H:%M:%S'
-    MSG_FORMAT = '%(now)s - %(playbook)s - %(task_name)s - %(task_action)s - %(category)s - %(data)s\n\n'
+    time_format = DEFAULT_TIME_FORMAT
+    msg_format = DEFAULT_MSG_FORMAT
 
     log_folder = DEFAULT_FOLDER
     max_bytes = 0
@@ -99,9 +120,21 @@ class CallbackModule(CallbackBase):
             direct=direct
         )
 
-        self.log_folder = self.get_option('log_folder')
-        self.max_bytes = int(self.get_option('max_bytes'))
-        self.backup_count = int(self.get_option('backup_count'))
+        self.log_folder = self.get_option('log_folder') \
+            if 'log_folder' in self._plugin_options \
+            else DEFAULT_FOLDER
+        self.time_format = self.get_option('time_format') \
+            if 'time_format' in self._plugin_options \
+            else DEFAULT_TIME_FORMAT
+        self.msg_format = self.get_option('msg_format') \
+            if 'msg_format' in self._plugin_options \
+            else DEFAULT_MSG_FORMAT
+        self.max_bytes = int(self.get_option('max_bytes')
+                             if 'max_bytes' in self._plugin_options
+                             else 0)
+        self.backup_count = int(self.get_option('backup_count')
+                                if 'backup_count' in self._plugin_options
+                                else 0)
 
         if not os.path.exists(self.log_folder):
             makedirs_safe(self.log_folder)
@@ -171,9 +204,9 @@ class CallbackModule(CallbackBase):
                 if invocation is not None:
                     data = json.dumps(invocation) + " => %s " % data
 
-        now = time.strftime(self.TIME_FORMAT, time.localtime())
+        now = time.strftime(self.time_format, time.localtime())
 
-        msg = self.MSG_FORMAT % dict(
+        msg = self.msg_format % dict(
                 now=now,
                 playbook=self.playbook,
                 task_name=result._task.name,
