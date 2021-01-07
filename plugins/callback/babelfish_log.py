@@ -218,7 +218,7 @@ def _get_logger(self, host):
     logger.setLevel(INFO)
     logger.addHandler(
         RotatingFileHandler(
-            os.path.join(self.log_folder, host),
+            os.path.join(self.log_folder, host, f'{host}-ansible.log'),
             maxBytes=self.max_bytes,
             backupCount=self.backup_count
         )
