@@ -213,158 +213,165 @@ class CallbackModule(CallbackBase):
                     return_value.append(child)
 
 
-def _get_logger(self, host):
-    logger = logging.getLogger('babelfish_log_%s' % host)
-    logger.setLevel(INFO)
-    logger.addHandler(
-        RotatingFileHandler(
-            os.path.join(self.log_folder, host, f'{host}-ansible.log'),
-            maxBytes=self.max_bytes,
-            backupCount=self.backup_count
+    def _get_logger(self, host):
+        logger_dir = os.path.join(self.log_folder, host)
+        if not os.path.exists(logger_dir):
+            makedirs_safe(logger_dir)
+        logger = logging.getLogger('babelfish_log_%s' % host)
+        logger.setLevel(INFO)
+        logger.addHandler(
+            RotatingFileHandler(
+                os.path.join(logger_dir, f'{host}-ansible.log'),
+                maxBytes=self.max_bytes,
+                backupCount=self.backup_count
+            )
         )
-    )
-    self.loggers[host] = logger
-    return logger
+        self.loggers[host] = logger
+        return logger
 
 
-def _format_output(self, output, stringify=True):
-    # If output is a dict
-    if type(output) == dict:
-        results = output.pop('results', None)
-        filtered_output = self.filter_keys(output, self.whitelist_keys)
-        if results:
-            filtered_output['results'] = [
-                self._format_output(item, False)
-                for item
-                in results
-            ]
-        return json.dumps(filtered_output, indent=2, sort_keys=True) if stringify else filtered_output
+    def _format_output(self, output, stringify=True):
+        # If output is a dict
+        if type(output) == dict:
+            results = output.pop('results', None)
+            filtered_output = self.filter_dict_keys(output, self.whitelist_keys)
+            try:
+                if results:
+                    filtered_output['results'] = [
+                        self._format_output(item, False)
+                        for item
+                        in results
+                    ]
+                return json.dumps(filtered_output, indent=2, sort_keys=True) if stringify else filtered_output
+            except:
+                pass
+        # If output is a list of dicts
+        if type(output) == list and type(output[0]) == dict:
+            # This gets a little complicated because it potentially means
+            # nested results, usually because of with_items.
+            real_output = list()
+            for index, item in enumerate(output):
+                real_output.append(self._format_output(item, False))
+            return json.dumps(real_output, indent=2, sort_keys=True) if stringify else real_output
 
-    # If output is a list of dicts
-    if type(output) == list and type(output[0]) == dict:
-        # This gets a little complicated because it potentially means
-        # nested results, usually because of with_items.
-        real_output = list()
-        for index, item in enumerate(output):
-            real_output.append(self._format_output(item, False))
-        return json.dumps(real_output, indent=2, sort_keys=True) if stringify else real_output
+        # If output is a list of strings
+        if type(output) == list and type(output[0]) != dict:
+            # Strip newline characters
+            real_output = list()
+            for item in output:
+                if "\n" in item:
+                    for string in item.split("\n"):
+                        real_output.append(string)
+                else:
+                    real_output.append(item)
 
-    # If output is a list of strings
-    if type(output) == list and type(output[0]) != dict:
-        # Strip newline characters
-        real_output = list()
-        for item in output:
-            if "\n" in item:
-                for string in item.split("\n"):
-                    real_output.append(string)
+            # Reformat lists with line breaks only if the total length is
+            # >75 chars
+            if len("".join(real_output)) > 75:
+                return "\n" + "\n".join(real_output)
             else:
-                real_output.append(item)
+                return " ".join(real_output)
 
-        # Reformat lists with line breaks only if the total length is
-        # >75 chars
-        if len("".join(real_output)) > 75:
-            return "\n" + "\n".join(real_output)
+        # Otherwise it's a string, (or an int, float, etc.) just return it
+        return str(output)
+
+
+    def log(self, result, category, log_level):
+        data = result._result
+        if isinstance(data, MutableMapping) or isinstance(data, dict):
+            if self.respect_no_log and 'censored' in data:
+                return
+
+            if '_ansible_verbose_override' in data:
+                # avoid logging extraneous data
+                data = 'omitted'
+            else:
+                data = data.copy()
+                invocation = data.pop('invocation', {})
+                invocation = invocation.get('module_args', None)
+                data = self._format_output(data)
+                if invocation is not None:
+                    invocation = self._format_output(invocation) \
+                        if self.format_invocation \
+                        else json.dumps(invocation)
+                    data = invocation + " => %s " % data
+
+        now = time.strftime(self.time_format, time.localtime())
+
+        msg = self.msg_format % dict(
+            now=now,
+            playbook=self.playbook,
+            task_name=result._task.name,
+            task_action=result._task.action,
+            category=category,
+            data=data,
+        )
+        host_name = result._host.get_name()
+        logger = self.loggers[host_name] if host_name in self.loggers else self._get_logger(host_name)
+
+        logger.log(log_level, msg)
+
+
+    def filter_dict_keys(self, node, keys=None):
+        if not keys:
+            return node
+        if not isinstance(keys, list) and isinstance(keys, str):
+            keys = [keys]
         else:
-            return " ".join(real_output)
+            return None
 
-    # Otherwise it's a string, (or an int, float, etc.) just return it
-    return str(output)
-
-
-def log(self, result, category, log_level):
-    data = result._result
-    if isinstance(data, MutableMapping) or isinstance(data, dict):
-        if self.respect_no_log and 'censored' in data:
-            return
-
-        if '_ansible_verbose_override' in data:
-            # avoid logging extraneous data
-            data = 'omitted'
-        else:
-            data = data.copy()
-            invocation = data.pop('invocation', {})
-            invocation = invocation.get('module_args', None)
-            data = self._format_output(data)
-            if invocation is not None:
-                invocation = self._format_output(invocation) \
-                    if self.format_invocation \
-                    else json.dumps(invocation)
-                data = invocation + " => %s " % data
-
-    now = time.strftime(self.time_format, time.localtime())
-
-    msg = self.msg_format % dict(
-        now=now,
-        playbook=self.playbook,
-        task_name=result._task.name,
-        task_action=result._task.action,
-        category=category,
-        data=data,
-    )
-    host_name = result._host.get_name()
-    print(str(msg))
-
-
-def filter_dict_keys(self, node, keys=None):
-    if not keys:
-        return node
-    if not isinstance(keys, list) and isinstance(keys, str):
-        keys = [keys]
-    else:
-        return None
-
-    if isinstance(node, dict):
-        return_value = {}
-        for key in node:
-            if key in keys:
-                return_value[key] = copy.deepcopy(node[key])
-            elif isinstance(node[key], list) or isinstance(node[key], dict):
-                child = self.filter_dict_keys(node[key], keys)
+        if isinstance(node, dict):
+            return_value = {}
+            for key in node:
+                if key in keys:
+                    return_value[key] = copy.deepcopy(node[key])
+                elif isinstance(node[key], list) or isinstance(node[key], dict):
+                    child = self.filter_dict_keys(node[key], keys)
+                    if child:
+                        return_value[key] = child
+            if return_value:
+                return return_value
+            else:
+                return None
+        elif isinstance(node, list):
+            return_value = []
+            for entry in node:
+                child = self.filter_dict_keys(entry, keys)
                 if child:
-                    return_value[key] = child
-        if return_value:
-            return return_value
-        else:
-            return None
-    elif isinstance(node, list):
-        return_value = []
-        for entry in node:
-            child = self.filter_dict_keys(entry, keys)
-            if child:
-                return_value.append(child)
-        if return_value:
-            return return_value
-        else:
-            return None
+                    return_value.append(child)
+            if return_value:
+                return return_value
+            else:
+                return None
 
 
-def v2_runner_on_failed(self, result, ignore_errors=False):
-    self.log(result, 'FAILED', ERROR)
+    def v2_runner_on_failed(self, result, ignore_errors=False):
+        self.log(result, 'FAILED', ERROR)
 
 
-def v2_runner_on_ok(self, result):
-    self.log(result, 'OK', INFO)
+    def v2_runner_on_ok(self, result):
+        self.log(result, 'OK', INFO)
 
 
-def v2_runner_on_skipped(self, result):
-    self.log(result, 'SKIPPED', INFO)
+    def v2_runner_on_skipped(self, result):
+        self.log(result, 'SKIPPED', INFO)
 
 
-def v2_runner_on_unreachable(self, result):
-    self.log(result, 'UNREACHABLE', WARNING)
+    def v2_runner_on_unreachable(self, result):
+        self.log(result, 'UNREACHABLE', WARNING)
 
 
-def v2_runner_on_async_failed(self, result):
-    self.log(result, 'ASYNC_FAILED', ERROR)
+    def v2_runner_on_async_failed(self, result):
+        self.log(result, 'ASYNC_FAILED', ERROR)
 
 
-def v2_playbook_on_start(self, playbook):
-    self.playbook = playbook._file_name
+    def v2_playbook_on_start(self, playbook):
+        self.playbook = playbook._file_name
 
 
-def v2_playbook_on_import_for_host(self, result, imported_file):
-    self.log(result, 'IMPORTED', INFO)
+    def v2_playbook_on_import_for_host(self, result, imported_file):
+        self.log(result, 'IMPORTED', INFO)
 
 
-def v2_playbook_on_not_import_for_host(self, result, missing_file):
-    self.log(result, 'NOTIMPORTED', INFO)
+    def v2_playbook_on_not_import_for_host(self, result, missing_file):
+        self.log(result, 'NOTIMPORTED', INFO)
